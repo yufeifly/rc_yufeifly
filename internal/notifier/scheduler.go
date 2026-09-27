@@ -15,6 +15,7 @@ type Scheduler struct {
 	cfg       Config
 	store     *Store
 	providers *ProviderRegistry
+	metrics   *Metrics
 	log       *slog.Logger
 	clock     Clock
 	workerID  string
@@ -22,13 +23,15 @@ type Scheduler struct {
 	globalPermits chan struct{}
 	wake          chan struct{}
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	cursor int
-	wg     sync.WaitGroup
+	mu           sync.Mutex
+	claimCancel  context.CancelFunc
+	workerCancel context.CancelFunc
+	cursor       int
+	loopWG       sync.WaitGroup
+	workerWG     sync.WaitGroup
 }
 
-func NewScheduler(cfg Config, store *Store, providers *ProviderRegistry, log *slog.Logger) *Scheduler {
+func NewScheduler(cfg Config, store *Store, providers *ProviderRegistry, metrics *Metrics, log *slog.Logger) *Scheduler {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -40,6 +43,7 @@ func NewScheduler(cfg Config, store *Store, providers *ProviderRegistry, log *sl
 		cfg:           cfg,
 		store:         store,
 		providers:     providers,
+		metrics:       metrics,
 		log:           log,
 		clock:         systemClock{},
 		workerID:      "worker_" + ulid.Make().String(),
@@ -50,16 +54,18 @@ func NewScheduler(cfg Config, store *Store, providers *ProviderRegistry, log *sl
 
 func (s *Scheduler) Start(parent context.Context) {
 	s.mu.Lock()
-	if s.cancel != nil {
+	if s.claimCancel != nil {
 		s.mu.Unlock()
 		return
 	}
-	ctx, cancel := context.WithCancel(parent)
-	s.cancel = cancel
-	s.wg.Add(1)
+	claimContext, claimCancel := context.WithCancel(parent)
+	workerContext, workerCancel := context.WithCancel(context.Background())
+	s.claimCancel = claimCancel
+	s.workerCancel = workerCancel
+	s.loopWG.Add(1)
 	s.mu.Unlock()
 
-	go s.run(ctx)
+	go s.run(claimContext, workerContext)
 }
 
 func (s *Scheduler) Wake() {
@@ -71,27 +77,35 @@ func (s *Scheduler) Wake() {
 
 func (s *Scheduler) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	cancel := s.cancel
+	claimCancel := s.claimCancel
+	workerCancel := s.workerCancel
 	s.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if claimCancel != nil {
+		claimCancel()
 	}
+	s.loopWG.Wait()
 
 	done := make(chan struct{})
 	go func() {
-		s.wg.Wait()
+		s.workerWG.Wait()
 		close(done)
 	}()
 	select {
 	case <-done:
+		if workerCancel != nil {
+			workerCancel()
+		}
 		return nil
 	case <-ctx.Done():
+		if workerCancel != nil {
+			workerCancel()
+		}
 		return ctx.Err()
 	}
 }
 
-func (s *Scheduler) run(ctx context.Context) {
-	defer s.wg.Done()
+func (s *Scheduler) run(ctx, workerContext context.Context) {
+	defer s.loopWG.Done()
 	pollInterval := s.cfg.Scheduler.PollInterval
 	if pollInterval <= 0 {
 		pollInterval = 500 * time.Millisecond
@@ -107,24 +121,29 @@ func (s *Scheduler) run(ctx context.Context) {
 		case <-timer.C:
 		}
 
-		s.dispatch(ctx)
+		s.dispatch(ctx, workerContext)
 		timer.Reset(pollInterval)
 	}
 }
 
-func (s *Scheduler) dispatch(ctx context.Context) {
+func (s *Scheduler) dispatch(ctx, workerContext context.Context) {
 	now := s.clock.Now().UTC()
 	recoveryLimit := s.cfg.Scheduler.RecoveryBatchSize
 	if recoveryLimit <= 0 {
 		recoveryLimit = 100
 	}
-	if _, err := s.store.RecoverExpired(ctx, now, recoveryLimit); err != nil {
+	databaseStartedAt := time.Now()
+	_, err := s.store.RecoverExpired(ctx, now, recoveryLimit)
+	s.metrics.ObserveDatabase("recover_expired", time.Since(databaseStartedAt), err)
+	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.log.Error("recover expired leases", "error", err)
 		}
 		return
 	}
+	databaseStartedAt = time.Now()
 	providers, err := s.store.ListDueProviders(ctx, now, s.cfg.Priority.AgingInterval)
+	s.metrics.ObserveDatabase("list_due_providers", time.Since(databaseStartedAt), err)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.log.Error("list due providers", "error", err)
@@ -137,6 +156,9 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 
 	start := s.cursor % len(providers)
 	for offset := range providers {
+		if ctx.Err() != nil {
+			return
+		}
 		index := (start + offset) % len(providers)
 		due := providers[index]
 		if !tryAcquire(s.globalPermits) {
@@ -152,6 +174,7 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 		if configured {
 			providerVersion = provider.Version
 		}
+		databaseStartedAt = time.Now()
 		claimed, claimErr := s.store.ClaimAndStart(ctx, ClaimRequest{
 			ProviderID:      due.ProviderID,
 			ProviderVersion: providerVersion,
@@ -160,6 +183,7 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 			LeaseDuration:   s.cfg.Scheduler.LeaseDuration,
 			AgingInterval:   s.cfg.Priority.AgingInterval,
 		})
+		s.metrics.ObserveDatabase("claim_and_start", time.Since(databaseStartedAt), claimErr)
 		if claimErr != nil {
 			if configured {
 				provider.Release()
@@ -171,19 +195,22 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 			continue
 		}
 
-		s.wg.Add(1)
-		go s.deliver(ctx, provider, configured, claimed)
+		s.metrics.ObserveClaim(claimed.ProviderID, claimed.Priority)
+		s.workerWG.Add(1)
+		go s.deliver(workerContext, provider, configured, claimed)
 	}
 	s.cursor = (start + 1) % len(providers)
 }
 
 func (s *Scheduler) deliver(ctx context.Context, provider *Provider, configured bool, task ClaimedNotification) {
-	defer s.wg.Done()
+	defer s.workerWG.Done()
 	defer release(s.globalPermits)
 	if configured {
 		defer provider.Release()
 	}
+	defer s.metrics.ObserveWorkerReleased(task.ProviderID)
 
+	startedAt := s.clock.Now()
 	outcome := DeliveryOutcome{
 		Category:    ErrorProviderConfig,
 		SafeMessage: "provider is missing or disabled",
@@ -191,6 +218,7 @@ func (s *Scheduler) deliver(ctx context.Context, provider *Provider, configured 
 	if configured {
 		outcome = provider.Deliver(ctx, task)
 	}
+	s.metrics.ObserveDelivery(task.ProviderID, outcome, s.clock.Now().Sub(startedAt))
 
 	completedAt := s.clock.Now().UTC()
 	var nextAttemptAt *time.Time
@@ -202,7 +230,7 @@ func (s *Scheduler) deliver(ctx context.Context, provider *Provider, configured 
 		next := completedAt.Add(delay)
 		nextAttemptAt = &next
 	}
-	err := s.store.Complete(context.WithoutCancel(ctx), CompleteRequest{
+	request := CompleteRequest{
 		ID:            task.ID,
 		AttemptID:     task.AttemptID,
 		WorkerID:      task.LeaseOwner,
@@ -211,9 +239,46 @@ func (s *Scheduler) deliver(ctx context.Context, provider *Provider, configured 
 		Outcome:       outcome,
 		CompletedAt:   completedAt,
 		NextAttemptAt: nextAttemptAt,
-	})
-	if err != nil && !errors.Is(err, ErrStaleLease) {
+	}
+	err := s.completeWithRetry(request)
+	if errors.Is(err, ErrStaleLease) {
+		s.metrics.ObserveStaleCompletion(task.ProviderID)
+	} else if err != nil {
 		s.log.Error("complete notification", "notification_id", task.ID, "error", err)
+	} else if nextAttemptAt != nil {
+		s.metrics.ObserveRetry(task.ProviderID, outcome.Category)
+	} else if !outcome.Success {
+		s.metrics.ObserveDead(task.ProviderID, outcome.Category)
+	}
+}
+
+func (s *Scheduler) completeWithRetry(request CompleteRequest) error {
+	budget := s.cfg.Scheduler.FinalizeRetryBudget
+	if budget <= 0 {
+		budget = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	delay := 25 * time.Millisecond
+	for {
+		startedAt := time.Now()
+		err := s.store.Complete(ctx, request)
+		s.metrics.ObserveDatabase("complete", time.Since(startedAt), err)
+		if err == nil || errors.Is(err, ErrStaleLease) {
+			return err
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+		if delay < 250*time.Millisecond {
+			delay *= 2
+		}
 	}
 }
 

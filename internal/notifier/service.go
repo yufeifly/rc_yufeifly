@@ -35,6 +35,7 @@ type Service struct {
 	store *Store
 	cfg   Config
 	clock Clock
+	wake  func()
 }
 
 func NewService(store *Store, cfg Config, clock Clock) *Service {
@@ -42,6 +43,10 @@ func NewService(store *Store, cfg Config, clock Clock) *Service {
 		clock = systemClock{}
 	}
 	return &Service{store: store, cfg: cfg, clock: clock}
+}
+
+func (s *Service) SetWake(wake func()) {
+	s.wake = wake
 }
 
 func (s *Service) Create(ctx context.Context, in CreateInput) (CreateResult, error) {
@@ -82,7 +87,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (CreateResult, err
 		return CreateResult{}, errors.New("provider maximum attempts must be positive")
 	}
 
-	return s.store.CreateOrGet(ctx, CreateNotification{
+	result, err := s.store.CreateOrGet(ctx, CreateNotification{
 		ID:                 "ntf_" + ulid.Make().String(),
 		RequestID:          in.RequestID,
 		CallerID:           in.CallerID,
@@ -97,6 +102,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (CreateResult, err
 		MaxAttempts:        maxAttempts,
 		CreatedAt:          now,
 	})
+	if err == nil && !result.Duplicate && s.wake != nil {
+		s.wake()
+	}
+	return result, err
 }
 
 func (s *Service) Get(ctx context.Context, id, callerID, role string) (Notification, error) {
@@ -120,13 +129,17 @@ func (s *Service) Replay(ctx context.Context, id, operatorID, reason string) (No
 	if len(reason) > 500 {
 		return Notification{}, fmt.Errorf("%w: replay reason exceeds 500 bytes", ErrInvalidRequest)
 	}
-	return s.store.ReplayDead(ctx, ReplayRequest{
+	notification, err := s.store.ReplayDead(ctx, ReplayRequest{
 		ID:         id,
 		AuditID:    "rpl_" + ulid.Make().String(),
 		OperatorID: operatorID,
 		Reason:     reason,
 		Now:        s.clock.Now().UTC(),
 	})
+	if err == nil && s.wake != nil {
+		s.wake()
+	}
+	return notification, err
 }
 
 func validateCreateInput(in CreateInput) error {

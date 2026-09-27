@@ -6,19 +6,23 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/oklog/ulid/v2"
 )
 
 type HTTPAPI struct {
-	service      *Service
-	auth         *Authenticator
-	maxBodyBytes int64
-	mux          *http.ServeMux
+	service        *Service
+	auth           *Authenticator
+	maxBodyBytes   int64
+	mux            *http.ServeMux
+	metrics        *Metrics
+	metricsHandler http.Handler
+	ready          atomic.Bool
 }
 
-func NewHTTPAPI(service *Service, auth *Authenticator, maxBodyBytes int64) http.Handler {
+func NewHTTPAPI(service *Service, auth *Authenticator, maxBodyBytes int64) *HTTPAPI {
 	api := &HTTPAPI{
 		service:      service,
 		auth:         auth,
@@ -30,17 +34,35 @@ func NewHTTPAPI(service *Service, auth *Authenticator, maxBodyBytes int64) http.
 	api.mux.HandleFunc("POST /v1/notifications/{id}/replay", api.replayNotification)
 	api.mux.HandleFunc("GET /health/live", api.liveness)
 	api.mux.HandleFunc("GET /health/ready", api.readiness)
+	api.mux.HandleFunc("GET /metrics", api.serveMetrics)
+	api.ready.Store(true)
 	return api
 }
 
 func (a *HTTPAPI) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	startedAt := time.Now()
 	requestID := validRequestID(request.Header.Get("X-Request-Id"))
 	if requestID == "" {
 		requestID = "req_" + ulid.Make().String()
 	}
 	response.Header().Set("X-Request-Id", requestID)
 	request.Header.Set("X-Request-Id", requestID)
-	a.mux.ServeHTTP(response, request)
+	captured := &statusCapturingWriter{ResponseWriter: response, status: http.StatusOK}
+	a.mux.ServeHTTP(captured, request)
+	route := request.Pattern
+	if route == "" {
+		route = "unmatched"
+	}
+	a.metrics.ObserveAPI(route, request.Method, captured.status, time.Since(startedAt))
+}
+
+func (a *HTTPAPI) SetMetrics(metrics *Metrics) {
+	a.metrics = metrics
+	a.metricsHandler = metrics.Handler()
+}
+
+func (a *HTTPAPI) SetReady(ready bool) {
+	a.ready.Store(ready)
 }
 
 func (a *HTTPAPI) createNotification(response http.ResponseWriter, request *http.Request) {
@@ -102,6 +124,7 @@ func (a *HTTPAPI) createNotification(response http.ResponseWriter, request *http
 		}
 		return
 	}
+	a.metrics.ObserveAccepted(result.Notification.ProviderID, result.Duplicate)
 
 	writeJSON(response, http.StatusAccepted, struct {
 		NotificationID string `json:"notification_id"`
@@ -224,11 +247,34 @@ func (a *HTTPAPI) liveness(response http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *HTTPAPI) readiness(response http.ResponseWriter, request *http.Request) {
+	if !a.ready.Load() {
+		writeJSON(response, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+		return
+	}
 	if err := a.service.store.Ping(request.Context()); err != nil {
 		writeJSON(response, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (a *HTTPAPI) serveMetrics(response http.ResponseWriter, request *http.Request) {
+	if a.metricsHandler == nil {
+		http.NotFound(response, request)
+		return
+	}
+	if a.auth.mode != "disabled" {
+		principal, err := a.auth.Authenticate(request)
+		if err != nil {
+			writeAPIError(response, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required", request.Header.Get("X-Request-Id"))
+			return
+		}
+		if principal.Role != "admin" {
+			writeAPIError(response, http.StatusForbidden, "FORBIDDEN", "operation is not permitted", request.Header.Get("X-Request-Id"))
+			return
+		}
+	}
+	a.metricsHandler.ServeHTTP(response, request)
 }
 
 func (a *HTTPAPI) writeDecodeError(response http.ResponseWriter, requestID string, err error) {
@@ -283,4 +329,21 @@ func validRequestID(value string) string {
 		}
 	}
 	return value
+}
+
+type statusCapturingWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusCapturingWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusCapturingWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(body)
 }
