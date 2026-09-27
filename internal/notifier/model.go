@@ -122,3 +122,29 @@ type DeliveryOutcome struct {
 	RetryAfter  *time.Duration
 	SafeMessage string
 }
+
+type DueProvider struct {
+	ProviderID        string
+	EffectivePriority Priority
+	DueAt             time.Time
+}
+
+type ClaimRequest struct {
+	ProviderID      string
+	ProviderVersion string
+	WorkerID        string
+	Now             time.Time
+	LeaseDuration   time.Duration
+	AgingInterval   time.Duration
+}
+
+type CompleteRequest struct {
+	ID            string
+	AttemptID     string
+	WorkerID      string
+	LeaseEpoch    int64
+	Version       int64
+	Outcome       DeliveryOutcome
+	CompletedAt   time.Time
+	NextAttemptAt *time.Time
+}
