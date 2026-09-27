@@ -1,6 +1,10 @@
 package notifier
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+	"time"
+)
 
 type Status string
 
@@ -49,3 +53,55 @@ var (
 	ErrStaleLease          = errors.New("notification lease is stale")
 	ErrInvalidState        = errors.New("invalid notification state")
 )
+
+type Notification struct {
+	ID                 string
+	RequestID          string
+	CallerID           string
+	IdempotencyKey     string
+	RequestHash        string
+	RequestHashVersion int
+	ProviderID         string
+	EventType          string
+	Priority           Priority
+	OccurredAt         time.Time
+	Payload            json.RawMessage
+	Status             Status
+	DeliveryRound      int
+	AttemptInRound     int
+	TotalAttemptCount  int
+	MaxAttempts        int
+	NextAttemptAt      *time.Time
+	LeaseOwner         string
+	LeaseEpoch         int64
+	LeaseUntil         *time.Time
+	Version            int64
+	LastErrorCategory  ErrorCategory
+	LastHTTPStatus     *int
+	LastErrorMessage   string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	SucceededAt        *time.Time
+	DeadAt             *time.Time
+}
+
+type CreateNotification struct {
+	ID                 string
+	RequestID          string
+	CallerID           string
+	IdempotencyKey     string
+	RequestHash        string
+	RequestHashVersion int
+	ProviderID         string
+	EventType          string
+	Priority           Priority
+	OccurredAt         time.Time
+	Payload            json.RawMessage
+	MaxAttempts        int
+	CreatedAt          time.Time
+}
+
+type CreateResult struct {
+	Notification Notification
+	Duplicate    bool
+}
