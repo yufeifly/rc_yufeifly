@@ -148,3 +148,11 @@ type CompleteRequest struct {
 	CompletedAt   time.Time
 	NextAttemptAt *time.Time
 }
+
+type ReplayRequest struct {
+	ID         string
+	AuditID    string
+	OperatorID string
+	Reason     string
+	Now        time.Time
+}

@@ -110,6 +110,25 @@ func (s *Service) Get(ctx context.Context, id, callerID, role string) (Notificat
 	return notification, nil
 }
 
+func (s *Service) Replay(ctx context.Context, id, operatorID, reason string) (Notification, error) {
+	id = strings.TrimSpace(id)
+	operatorID = strings.TrimSpace(operatorID)
+	reason = strings.TrimSpace(reason)
+	if id == "" || operatorID == "" || reason == "" {
+		return Notification{}, fmt.Errorf("%w: notification ID, operator ID and reason are required", ErrInvalidRequest)
+	}
+	if len(reason) > 500 {
+		return Notification{}, fmt.Errorf("%w: replay reason exceeds 500 bytes", ErrInvalidRequest)
+	}
+	return s.store.ReplayDead(ctx, ReplayRequest{
+		ID:         id,
+		AuditID:    "rpl_" + ulid.Make().String(),
+		OperatorID: operatorID,
+		Reason:     reason,
+		Now:        s.clock.Now().UTC(),
+	})
+}
+
 func validateCreateInput(in CreateInput) error {
 	required := map[string]string{
 		"request_id":      in.RequestID,

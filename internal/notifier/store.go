@@ -466,6 +466,190 @@ func (s *Store) Complete(ctx context.Context, in CompleteRequest) error {
 	return nil
 }
 
+func (s *Store) RecoverExpired(ctx context.Context, now time.Time, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, errors.New("recovery limit must be positive")
+	}
+	nowMilliseconds := now.UTC().UnixMilli()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin lease recovery: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, lease_epoch, version, attempt_in_round, max_attempts
+		FROM notifications
+		WHERE status = ? AND lease_until_ms <= ?
+		ORDER BY lease_until_ms
+		LIMIT ?
+	`, StatusDelivering, nowMilliseconds, limit)
+	if err != nil {
+		return 0, fmt.Errorf("select expired leases: %w", err)
+	}
+	type expiredLease struct {
+		id             string
+		epoch          int64
+		version        int64
+		attemptInRound int
+		maxAttempts    int
+	}
+	var expired []expiredLease
+	for rows.Next() {
+		var lease expiredLease
+		if err := rows.Scan(&lease.id, &lease.epoch, &lease.version, &lease.attemptInRound, &lease.maxAttempts); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan expired lease: %w", err)
+		}
+		expired = append(expired, lease)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate expired leases: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close expired lease rows: %w", err)
+	}
+
+	recovered := 0
+	for _, lease := range expired {
+		status := StatusPending
+		var nextAttemptAt any = nowMilliseconds
+		var deadAt any
+		if lease.attemptInRound >= lease.maxAttempts {
+			status = StatusDead
+			nextAttemptAt = nil
+			deadAt = nowMilliseconds
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE notifications
+			SET status = ?,
+			    next_attempt_at_ms = ?,
+			    lease_owner = NULL,
+			    lease_until_ms = NULL,
+			    version = version + 1,
+			    last_error_category = ?,
+			    last_error_message = ?,
+			    updated_at_ms = ?,
+			    dead_at_ms = ?
+			WHERE id = ? AND status = ? AND lease_epoch = ? AND version = ?
+			  AND lease_until_ms <= ?
+		`, status, nextAttemptAt, ErrorLeaseExpiredUnknown, "delivery lease expired with an unknown result",
+			nowMilliseconds, deadAt, lease.id, StatusDelivering, lease.epoch, lease.version, nowMilliseconds)
+		if err != nil {
+			return 0, fmt.Errorf("recover notification %q: %w", lease.id, err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("inspect recovery for notification %q: %w", lease.id, err)
+		}
+		if rowsAffected == 0 {
+			continue
+		}
+
+		result, err = tx.ExecContext(ctx, `
+			UPDATE delivery_attempts
+			SET status = 'ABANDONED',
+			    finished_at_ms = ?,
+			    latency_ms = MAX(0, ? - started_at_ms),
+			    error_category = ?,
+			    error_message = ?,
+			    retryable = 1,
+			    next_attempt_at_ms = ?
+			WHERE notification_id = ? AND lease_epoch = ? AND status = 'STARTED'
+		`, nowMilliseconds, nowMilliseconds, ErrorLeaseExpiredUnknown,
+			"delivery lease expired with an unknown result", nextAttemptAt, lease.id, lease.epoch)
+		if err != nil {
+			return 0, fmt.Errorf("abandon attempt for notification %q: %w", lease.id, err)
+		}
+		rowsAffected, err = result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("inspect abandoned attempt for notification %q: %w", lease.id, err)
+		}
+		if rowsAffected != 1 {
+			return 0, fmt.Errorf("notification %q has no active attempt: %w", lease.id, ErrInvalidState)
+		}
+		recovered++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit lease recovery: %w", err)
+	}
+	return recovered, nil
+}
+
+func (s *Store) ReplayDead(ctx context.Context, in ReplayRequest) (Notification, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Notification{}, fmt.Errorf("begin replay: %w", err)
+	}
+	defer tx.Rollback()
+
+	var status Status
+	var round int
+	var version int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT status, delivery_round, version FROM notifications WHERE id = ?
+	`, in.ID).Scan(&status, &round, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Notification{}, ErrNotFound
+	}
+	if err != nil {
+		return Notification{}, fmt.Errorf("read replay state: %w", err)
+	}
+	if status != StatusDead {
+		return Notification{}, ErrInvalidState
+	}
+
+	auditID := in.AuditID
+	if auditID == "" {
+		auditID = "rpl_" + ulid.Make().String()
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO replay_audits (
+			id, notification_id, operator_id, reason,
+			from_round, to_round, created_at_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, auditID, in.ID, in.OperatorID, in.Reason, round, round+1, in.Now.UTC().UnixMilli()); err != nil {
+		return Notification{}, fmt.Errorf("create replay audit: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE notifications
+		SET status = ?,
+		    delivery_round = delivery_round + 1,
+		    attempt_in_round = 0,
+		    next_attempt_at_ms = ?,
+		    lease_owner = NULL,
+		    lease_until_ms = NULL,
+		    version = version + 1,
+		    last_error_category = NULL,
+		    last_http_status = NULL,
+		    last_error_message = NULL,
+		    updated_at_ms = ?,
+		    succeeded_at_ms = NULL,
+		    dead_at_ms = NULL
+		WHERE id = ? AND status = ? AND version = ?
+	`, StatusPending, in.Now.UTC().UnixMilli(), in.Now.UTC().UnixMilli(), in.ID, StatusDead, version)
+	if err != nil {
+		return Notification{}, fmt.Errorf("replay notification: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Notification{}, fmt.Errorf("inspect replay update: %w", err)
+	}
+	if rowsAffected != 1 {
+		return Notification{}, ErrInvalidState
+	}
+	notification, err := getNotification(ctx, tx.QueryRowContext(ctx, notificationSelect+` WHERE id = ?`, in.ID))
+	if err != nil {
+		return Notification{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Notification{}, fmt.Errorf("commit replay: %w", err)
+	}
+	return notification, nil
+}
+
 func nullableErrorCategory(outcome DeliveryOutcome) any {
 	if outcome.Success || outcome.Category == "" || outcome.Category == ErrorNone {
 		return nil

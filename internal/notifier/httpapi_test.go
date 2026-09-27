@@ -134,6 +134,55 @@ func TestHealthRoutesSeparateLivenessFromReadiness(t *testing.T) {
 	}
 }
 
+func TestReplayRequiresAdminAndReturnsAccepted(t *testing.T) {
+	store, handler := newHTTPTestFixture(t, 4096)
+	now := time.Date(2026, time.September, 27, 12, 0, 0, 0, time.UTC)
+	createDueFixture(t, store, "ntf-http-replay", PriorityNormal, now)
+	claimed := claimFixture(t, store, "ntf-http-replay", now)
+	if err := store.Complete(context.Background(), CompleteRequest{
+		ID:          claimed.ID,
+		AttemptID:   claimed.AttemptID,
+		WorkerID:    claimed.LeaseOwner,
+		LeaseEpoch:  claimed.LeaseEpoch,
+		Version:     claimed.Version,
+		Outcome:     DeliveryOutcome{Category: ErrorUpstream4XX, SafeMessage: "rejected"},
+		CompletedAt: now,
+	}); err != nil {
+		t.Fatalf("make task dead: %v", err)
+	}
+
+	forbidden := performJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/notifications/ntf-http-replay/replay",
+		"token-a",
+		`{"reason":"credential rotated"}`,
+	)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("producer replay status = %d, want 403", forbidden.Code)
+	}
+
+	accepted := performJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/notifications/ntf-http-replay/replay",
+		"token-admin",
+		`{"reason":"credential rotated"}`,
+	)
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("admin replay status = %d, body = %s", accepted.Code, accepted.Body.String())
+	}
+	notification, err := store.Get(context.Background(), claimed.ID)
+	if err != nil {
+		t.Fatalf("get replayed notification: %v", err)
+	}
+	if notification.Status != StatusPending || notification.DeliveryRound != 2 {
+		t.Fatalf("unexpected replayed notification: %+v", notification)
+	}
+}
+
 func newHTTPTestFixture(t *testing.T, maxBodyBytes int64) (*Store, http.Handler) {
 	t.Helper()
 	store := openTestStore(t)

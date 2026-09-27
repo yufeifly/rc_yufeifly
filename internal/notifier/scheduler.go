@@ -114,6 +114,16 @@ func (s *Scheduler) run(ctx context.Context) {
 
 func (s *Scheduler) dispatch(ctx context.Context) {
 	now := s.clock.Now().UTC()
+	recoveryLimit := s.cfg.Scheduler.RecoveryBatchSize
+	if recoveryLimit <= 0 {
+		recoveryLimit = 100
+	}
+	if _, err := s.store.RecoverExpired(ctx, now, recoveryLimit); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.log.Error("recover expired leases", "error", err)
+		}
+		return
+	}
 	providers, err := s.store.ListDueProviders(ctx, now, s.cfg.Priority.AgingInterval)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {

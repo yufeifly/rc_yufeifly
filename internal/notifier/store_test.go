@@ -166,6 +166,145 @@ func TestOpenStoreRejectsFutureSchema(t *testing.T) {
 	}
 }
 
+func TestRetryableFailureSchedulesNextAttempt(t *testing.T) {
+	store := openTestStore(t)
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	createDueFixture(t, store, "ntf-retry", PriorityNormal, now)
+	claimed := claimFixture(t, store, "ntf-retry", now)
+	next := now.Add(10 * time.Second)
+	status := httpStatusPointer(503)
+
+	err := store.Complete(context.Background(), CompleteRequest{
+		ID:            claimed.ID,
+		AttemptID:     claimed.AttemptID,
+		WorkerID:      claimed.LeaseOwner,
+		LeaseEpoch:    claimed.LeaseEpoch,
+		Version:       claimed.Version,
+		Outcome:       DeliveryOutcome{Category: ErrorUpstream5XX, HTTPStatus: status, Retryable: true, SafeMessage: "upstream returned a server error"},
+		CompletedAt:   now.Add(time.Second),
+		NextAttemptAt: &next,
+	})
+	if err != nil {
+		t.Fatalf("complete retryable failure: %v", err)
+	}
+
+	notification, err := store.Get(context.Background(), claimed.ID)
+	if err != nil {
+		t.Fatalf("get notification: %v", err)
+	}
+	if notification.Status != StatusRetryWait || notification.NextAttemptAt == nil || !notification.NextAttemptAt.Equal(next) {
+		t.Fatalf("notification was not scheduled for retry: %+v", notification)
+	}
+	if notification.LastErrorCategory != ErrorUpstream5XX || notification.LastHTTPStatus == nil || *notification.LastHTTPStatus != 503 {
+		t.Fatalf("notification error fields = %+v", notification)
+	}
+}
+
+func TestPermanentFailureBecomesDead(t *testing.T) {
+	store := openTestStore(t)
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	createDueFixture(t, store, "ntf-dead", PriorityNormal, now)
+	claimed := claimFixture(t, store, "ntf-dead", now)
+
+	err := store.Complete(context.Background(), CompleteRequest{
+		ID:          claimed.ID,
+		AttemptID:   claimed.AttemptID,
+		WorkerID:    claimed.LeaseOwner,
+		LeaseEpoch:  claimed.LeaseEpoch,
+		Version:     claimed.Version,
+		Outcome:     DeliveryOutcome{Category: ErrorUpstream4XX, SafeMessage: "upstream rejected the notification"},
+		CompletedAt: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("complete permanent failure: %v", err)
+	}
+	notification, err := store.Get(context.Background(), claimed.ID)
+	if err != nil {
+		t.Fatalf("get notification: %v", err)
+	}
+	if notification.Status != StatusDead || notification.DeadAt == nil || notification.NextAttemptAt != nil {
+		t.Fatalf("notification did not become dead: %+v", notification)
+	}
+}
+
+func TestExpiredStartedAttemptBecomesAbandoned(t *testing.T) {
+	store := openTestStore(t)
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	createDueFixture(t, store, "ntf-expired", PriorityNormal, now)
+	claimed := claimFixture(t, store, "ntf-expired", now)
+
+	recovered, err := store.RecoverExpired(context.Background(), now.Add(31*time.Second), 10)
+	if err != nil {
+		t.Fatalf("recover expired: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+	notification, err := store.Get(context.Background(), claimed.ID)
+	if err != nil {
+		t.Fatalf("get notification: %v", err)
+	}
+	if notification.Status != StatusPending || notification.NextAttemptAt == nil ||
+		notification.LastErrorCategory != ErrorLeaseExpiredUnknown {
+		t.Fatalf("unexpected recovered notification: %+v", notification)
+	}
+	var attemptStatus string
+	var category string
+	if err := store.db.QueryRow(`
+		SELECT status, error_category FROM delivery_attempts WHERE id = ?
+	`, claimed.AttemptID).Scan(&attemptStatus, &category); err != nil {
+		t.Fatalf("read recovered attempt: %v", err)
+	}
+	if attemptStatus != "ABANDONED" || category != string(ErrorLeaseExpiredUnknown) {
+		t.Fatalf("attempt status=%q category=%q", attemptStatus, category)
+	}
+}
+
+func TestReplayPreservesNotificationIDAndHistory(t *testing.T) {
+	store := openTestStore(t)
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	createDueFixture(t, store, "ntf-replay", PriorityNormal, now)
+	claimed := claimFixture(t, store, "ntf-replay", now)
+	if err := store.Complete(context.Background(), CompleteRequest{
+		ID:          claimed.ID,
+		AttemptID:   claimed.AttemptID,
+		WorkerID:    claimed.LeaseOwner,
+		LeaseEpoch:  claimed.LeaseEpoch,
+		Version:     claimed.Version,
+		Outcome:     DeliveryOutcome{Category: ErrorUpstream4XX, SafeMessage: "rejected"},
+		CompletedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("make task dead: %v", err)
+	}
+
+	replayed, err := store.ReplayDead(context.Background(), ReplayRequest{
+		ID:         claimed.ID,
+		AuditID:    "rpl_test",
+		OperatorID: "admin",
+		Reason:     "credential rotated",
+		Now:        now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("replay dead task: %v", err)
+	}
+	if replayed.ID != claimed.ID || replayed.Status != StatusPending ||
+		replayed.DeliveryRound != 2 || replayed.AttemptInRound != 0 ||
+		replayed.TotalAttemptCount != 1 || replayed.LeaseEpoch != claimed.LeaseEpoch {
+		t.Fatalf("unexpected replayed task: %+v", replayed)
+	}
+	var attempts int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM delivery_attempts WHERE notification_id = ?`, claimed.ID).Scan(&attempts); err != nil {
+		t.Fatalf("count attempts: %v", err)
+	}
+	var audits int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM replay_audits WHERE notification_id = ?`, claimed.ID).Scan(&audits); err != nil {
+		t.Fatalf("count audits: %v", err)
+	}
+	if attempts != 1 || audits != 1 {
+		t.Fatalf("history counts: attempts=%d audits=%d", attempts, audits)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := OpenStore(context.Background(), DatabaseConfig{
@@ -181,6 +320,29 @@ func openTestStore(t *testing.T) *Store {
 		}
 	})
 	return store
+}
+
+func claimFixture(t *testing.T, store *Store, id string, now time.Time) ClaimedNotification {
+	t.Helper()
+	claimed, err := store.ClaimAndStart(context.Background(), ClaimRequest{
+		ProviderID:      "crm",
+		ProviderVersion: "v1",
+		WorkerID:        "worker-a",
+		Now:             now,
+		LeaseDuration:   30 * time.Second,
+		AgingInterval:   30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("claim %s: %v", id, err)
+	}
+	if claimed.ID != id {
+		t.Fatalf("claimed %s, want %s", claimed.ID, id)
+	}
+	return claimed
+}
+
+func httpStatusPointer(status int) *int {
+	return &status
 }
 
 func createFixture(id, callerID, key, payload string) CreateNotification {

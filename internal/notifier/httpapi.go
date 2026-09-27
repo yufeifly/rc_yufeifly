@@ -27,6 +27,7 @@ func NewHTTPAPI(service *Service, auth *Authenticator, maxBodyBytes int64) http.
 	}
 	api.mux.HandleFunc("POST /v1/notifications", api.createNotification)
 	api.mux.HandleFunc("GET /v1/notifications/{id}", api.getNotification)
+	api.mux.HandleFunc("POST /v1/notifications/{id}/replay", api.replayNotification)
 	api.mux.HandleFunc("GET /health/live", api.liveness)
 	api.mux.HandleFunc("GET /health/ready", api.readiness)
 	return api
@@ -112,6 +113,69 @@ func (a *HTTPAPI) createNotification(response http.ResponseWriter, request *http
 		Status:         result.Notification.Status,
 		Duplicate:      result.Duplicate,
 		StatusURL:      "/v1/notifications/" + result.Notification.ID,
+	})
+}
+
+func (a *HTTPAPI) replayNotification(response http.ResponseWriter, request *http.Request) {
+	requestID := request.Header.Get("X-Request-Id")
+	principal, err := a.auth.Authenticate(request)
+	if err != nil {
+		writeAPIError(response, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required", requestID)
+		return
+	}
+	if principal.Role != "admin" {
+		writeAPIError(response, http.StatusForbidden, "FORBIDDEN", "operation is not permitted", requestID)
+		return
+	}
+
+	request.Body = http.MaxBytesReader(response, request.Body, a.maxBodyBytes)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var input struct {
+		Reason string `json:"reason"`
+	}
+	if decodeErr := decoder.Decode(&input); decodeErr != nil {
+		a.writeDecodeError(response, requestID, decodeErr)
+		return
+	}
+	var trailing any
+	if decodeErr := decoder.Decode(&trailing); !errors.Is(decodeErr, io.EOF) {
+		if decodeErr == nil {
+			writeAPIError(response, http.StatusBadRequest, "INVALID_JSON", "multiple JSON documents are not allowed", requestID)
+			return
+		}
+		a.writeDecodeError(response, requestID, decodeErr)
+		return
+	}
+
+	notification, err := a.service.Replay(
+		request.Context(),
+		request.PathValue("id"),
+		principal.CallerID,
+		input.Reason,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidRequest):
+			writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), requestID)
+		case errors.Is(err, ErrNotFound):
+			writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "notification not found", requestID)
+		case errors.Is(err, ErrInvalidState):
+			writeAPIError(response, http.StatusConflict, "INVALID_STATE", "only dead notifications can be replayed", requestID)
+		default:
+			writeAPIError(response, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "notification could not be replayed", requestID)
+		}
+		return
+	}
+
+	writeJSON(response, http.StatusAccepted, struct {
+		NotificationID string `json:"notification_id"`
+		Status         Status `json:"status"`
+		DeliveryRound  int    `json:"delivery_round"`
+	}{
+		NotificationID: notification.ID,
+		Status:         notification.Status,
+		DeliveryRound:  notification.DeliveryRound,
 	})
 }
 
