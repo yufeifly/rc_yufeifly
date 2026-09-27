@@ -1,0 +1,32 @@
+services:
+  notifier:
+    build: .
+    environment:
+      # Local development credentials. Replace them outside this Compose setup.
+      NOTIFIER_PRODUCER_TOKEN: local-producer-token
+      NOTIFIER_ADMIN_TOKEN: local-admin-token
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - notifier-data:/data
+    depends_on:
+      mock-provider:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  mock-provider:
+    build: .
+    command: ["/usr/local/bin/mock-provider", "-address", "0.0.0.0:18080"]
+    entrypoint: []
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18080/health"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+volumes:
+  notifier-data:

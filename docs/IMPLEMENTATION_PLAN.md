@@ -43,7 +43,7 @@
 - Create: `internal/notifier/config.go`
 - Create: `configs/config.example.yaml`
 
-- [ ] **Step 1: Initialize the module**
+- [x] **Step 1: Initialize the module**
 
 ```bash
 go mod init github.com/yufeifly/rc_yufeifly
@@ -53,7 +53,7 @@ go get modernc.org/sqlite
 go get github.com/prometheus/client_golang/prometheus
 ```
 
-- [ ] **Step 2: Write failing configuration and priority tests**
+- [x] **Step 2: Write failing configuration and priority tests**
 
 ```go
 func TestResolvePriorityUsesServerMapping(t *testing.T) {
@@ -77,7 +77,7 @@ func TestProductionRejectsUnsafeNetworkPolicy(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 Run:
 
@@ -87,7 +87,7 @@ go test ./internal/notifier -run 'TestResolvePriority|TestLoadConfig|TestProduct
 
 Expected: compile failure because the configuration and domain APIs do not exist.
 
-- [ ] **Step 4: Implement minimal domain and configuration**
+- [x] **Step 4: Implement minimal domain and configuration**
 
 Define:
 
@@ -110,14 +110,14 @@ func (c *Config) ResolveSecrets() error
 
 Use `yaml.Decoder.KnownFields(true)`. Keep secret values in unexported runtime fields and only persist environment variable names in YAML.
 
-- [ ] **Step 5: Verify GREEN and refactor**
+- [x] **Step 5: Verify GREEN and refactor**
 
 ```bash
 gofmt -w internal/notifier/*.go
 go test ./internal/notifier -run 'TestResolvePriority|TestLoadConfig|TestProduction' -count=1
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add go.mod go.sum internal/notifier/model.go internal/notifier/config.go internal/notifier/config_test.go configs/config.example.yaml
@@ -132,7 +132,7 @@ git commit -m "feat: add notifier domain and config"
 - Create: `internal/notifier/store_test.go`
 - Create: `internal/notifier/store.go`
 
-- [ ] **Step 1: Write failing persistence tests**
+- [x] **Step 1: Write failing persistence tests**
 
 ```go
 func TestStoreCreateOrGetIsIdempotent(t *testing.T) {
@@ -159,7 +159,7 @@ func TestStoreRejectsIdempotencyConflict(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 go test ./internal/notifier -run TestStore -count=1
@@ -167,7 +167,7 @@ go test ./internal/notifier -run TestStore -count=1
 
 Expected: compile failure because `Store` does not exist.
 
-- [ ] **Step 3: Implement schema and CreateOrGet**
+- [x] **Step 3: Implement schema and CreateOrGet**
 
 Implement:
 
@@ -180,7 +180,7 @@ func (s *Store) GetByIdempotencyKey(ctx context.Context, callerID, key string) (
 
 Create `notifications`, `delivery_attempts`, `replay_audits`, indexes and migration metadata exactly as defined in the technical design. Configure WAL, FULL synchronous mode, foreign keys and busy timeout.
 
-- [ ] **Step 4: Add concurrent idempotency test**
+- [x] **Step 4: Add concurrent idempotency test**
 
 ```go
 func TestConcurrentCreateProducesOneLogicalTask(t *testing.T) {
@@ -189,13 +189,13 @@ func TestConcurrentCreateProducesOneLogicalTask(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 ```bash
 go test ./internal/notifier -run 'TestStore|TestConcurrentCreate' -count=1
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/notifier/store.go internal/notifier/store_test.go
@@ -213,7 +213,7 @@ git commit -m "feat: persist idempotent notifications"
 - Create: `internal/notifier/httpapi_test.go`
 - Create: `internal/notifier/httpapi.go`
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 ```go
 func TestCanonicalJSONProducesStableHash(t *testing.T) {
@@ -230,7 +230,7 @@ func TestCreateAssignsPriorityFromEventType(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED, then implement Service**
+- [x] **Step 2: Verify RED, then implement Service**
 
 ```bash
 go test ./internal/notifier -run 'TestCanonicalJSON|TestCreateAssignsPriority' -count=1
@@ -249,7 +249,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (CreateResult, err
 func (s *Service) Get(ctx context.Context, id, callerID, role string) (Notification, error)
 ```
 
-- [ ] **Step 3: Write failing HTTP tests**
+- [x] **Step 3: Write failing HTTP tests**
 
 ```go
 func TestCreateReturns202OnlyAfterCommit(t *testing.T) {
@@ -266,7 +266,7 @@ func TestProducerCannotReadAnotherCallersTask(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Verify RED, then implement API and auth**
+- [x] **Step 4: Verify RED, then implement API and auth**
 
 ```bash
 go test ./internal/notifier -run 'TestCreateReturns|TestStoreFailure|TestProducer' -count=1
@@ -283,7 +283,7 @@ GET  /health/ready
 
 Use `http.MaxBytesReader`, `DisallowUnknownFields`, single-document validation, stable error codes, request IDs and constant-time token comparison.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 ```bash
 go test ./internal/notifier -count=1
@@ -300,7 +300,7 @@ git commit -m "feat: add notification HTTP API"
 - Create: `internal/notifier/provider.go`
 - Create: `internal/notifier/delivery.go`
 
-- [ ] **Step 1: Write failing Provider contract tests**
+- [x] **Step 1: Write failing Provider contract tests**
 
 ```go
 func TestProviderBuildsEnvelopeAndBearerAuth(t *testing.T) {
@@ -321,13 +321,13 @@ func TestSafeDialRejectsLoopbackInProduction(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 go test ./internal/notifier -run 'TestProvider|TestSafeDial' -count=1
 ```
 
-- [ ] **Step 3: Implement Provider Registry and request building**
+- [x] **Step 3: Implement Provider Registry and request building**
 
 Implement:
 
@@ -341,11 +341,11 @@ func (p *Provider) Deliver(ctx context.Context, task ClaimedNotification) Delive
 
 Each Provider owns an HTTP client, connection pool and bounded semaphore. Disable proxy use and redirects; validate every resolved IP at dial time.
 
-- [ ] **Step 4: Add failing classification tests**
+- [x] **Step 4: Add failing classification tests**
 
 Cover 2xx, 3xx, 400, 401, 403, 408, 425, 429, 5xx, DNS, connection and timeout. Assert response bodies and secrets are never persisted.
 
-- [ ] **Step 5: Implement classification and retry parsing**
+- [x] **Step 5: Implement classification and retry parsing**
 
 ```go
 func classifyResponse(status int, retryAfter string, now time.Time) DeliveryOutcome
@@ -354,7 +354,7 @@ func parseRetryAfter(value string, now time.Time) *time.Duration
 func retryDelay(policy RetryConfig, attempt int, random float64) time.Duration
 ```
 
-- [ ] **Step 6: Verify GREEN and commit**
+- [x] **Step 6: Verify GREEN and commit**
 
 ```bash
 go test ./internal/notifier -run 'TestProvider|TestSafeDial|TestRetry|TestClassif' -count=1
@@ -372,7 +372,7 @@ git commit -m "feat: add secure provider delivery"
 - Modify: `internal/notifier/store.go`
 - Modify: `internal/notifier/store_test.go`
 
-- [ ] **Step 1: Write failing priority and aging tests**
+- [x] **Step 1: Write failing priority and aging tests**
 
 ```go
 func TestHigherPriorityIsClaimedFirst(t *testing.T) {
@@ -391,13 +391,13 @@ func TestRetryAgingStartsAtNextAttemptTime(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 go test ./internal/notifier -run 'TestHigherPriority|TestLowPriority|TestRetryAging' -count=1
 ```
 
-- [ ] **Step 3: Implement effective priority and indexed claim**
+- [x] **Step 3: Implement effective priority and indexed claim**
 
 ```go
 func EffectivePriority(original Priority, dueSince, now time.Time, aging time.Duration) Priority
@@ -407,7 +407,7 @@ func (s *Store) ClaimAndStart(ctx context.Context, in ClaimRequest) (ClaimedNoti
 
 Persist original priority. Compute effective priority from `next_attempt_at`, cap at HIGH, then order by effective priority, due time and creation time.
 
-- [ ] **Step 4: Write failing fencing test**
+- [x] **Step 4: Write failing fencing test**
 
 ```go
 func TestExpiredLeaseRejectsOldWorker(t *testing.T) {
@@ -417,7 +417,7 @@ func TestExpiredLeaseRejectsOldWorker(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Implement scheduler and CAS completion**
+- [x] **Step 5: Implement scheduler and CAS completion**
 
 ```go
 func NewScheduler(cfg Config, store *Store, providers *ProviderRegistry, metrics *Metrics, log *slog.Logger) *Scheduler
@@ -428,7 +428,7 @@ func (s *Store) Complete(ctx context.Context, in CompleteRequest) error
 
 Reserve global and Provider permits before Claim. Rotate Providers within the highest effective priority tier. Release permits with `defer`.
 
-- [ ] **Step 6: Verify GREEN and commit**
+- [x] **Step 6: Verify GREEN and commit**
 
 ```bash
 go test ./internal/notifier -run 'TestHigherPriority|TestLowPriority|TestRetryAging|TestExpiredLease' -count=1
@@ -448,7 +448,7 @@ git commit -m "feat: add priority lease scheduler"
 - Modify: `internal/notifier/service.go`
 - Modify: `internal/notifier/httpapi.go`
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 ```go
 func TestRetryableFailureSchedulesNextAttempt(t *testing.T) {
@@ -468,13 +468,13 @@ func TestReplayPreservesNotificationIDAndHistory(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 go test ./internal/notifier -run 'TestRetryable|TestPermanent|TestExpiredStarted|TestReplay' -count=1
 ```
 
-- [ ] **Step 3: Implement lifecycle transactions**
+- [x] **Step 3: Implement lifecycle transactions**
 
 ```go
 func (s *Store) Complete(ctx context.Context, in CompleteRequest) error
@@ -485,7 +485,7 @@ func (s *Service) Replay(ctx context.Context, id, operatorID, reason string) (No
 
 Task and Attempt updates occur in the same transaction. Every completion checks owner, epoch and version.
 
-- [ ] **Step 4: Add Replay route and verify GREEN**
+- [x] **Step 4: Add Replay route and verify GREEN**
 
 ```text
 POST /v1/notifications/{id}/replay
@@ -496,7 +496,7 @@ go test ./internal/notifier -count=1
 go test -race ./internal/notifier -count=1
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/notifier
@@ -513,7 +513,7 @@ git commit -m "feat: add retry recovery and replay"
 - Modify: `internal/notifier/httpapi.go`
 - Create: `cmd/notifier/main.go`
 
-- [ ] **Step 1: Write failing metrics tests**
+- [x] **Step 1: Write failing metrics tests**
 
 ```go
 func TestMetricsExposeProviderFailureCounters(t *testing.T) {
@@ -526,17 +526,17 @@ func TestMetricsNeverUseNotificationIDAsLabel(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 go test ./internal/notifier -run TestMetrics -count=1
 ```
 
-- [ ] **Step 3: Implement Metrics and `/metrics`**
+- [x] **Step 3: Implement Metrics and `/metrics`**
 
 Use Prometheus CounterVec, HistogramVec and GaugeVec with the exact names in the technical design. Refresh database-derived gauges periodically rather than scanning on scrape.
 
-- [ ] **Step 4: Write failing lifecycle tests**
+- [x] **Step 4: Write failing lifecycle tests**
 
 ```go
 func TestShutdownStopsClaimingAndDrainsWorkers(t *testing.T) {
@@ -545,11 +545,11 @@ func TestShutdownStopsClaimingAndDrainsWorkers(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Implement process wiring and graceful shutdown**
+- [x] **Step 5: Implement process wiring and graceful shutdown**
 
 Wire config, store, registry, metrics, service, scheduler and HTTP server. Bind the listener before setting readiness. On signal, set not-ready, stop claims, drain workers and close resources.
 
-- [ ] **Step 6: Verify GREEN and commit**
+- [x] **Step 6: Verify GREEN and commit**
 
 ```bash
 go test ./...
@@ -573,7 +573,7 @@ git commit -m "feat: add metrics and lifecycle"
 - Create: `configs/config.recovery.yaml`
 - Create: `Makefile`
 
-- [ ] **Step 1: Write the executable acceptance scenario**
+- [x] **Step 1: Write the executable acceptance scenario**
 
 `scripts/demo.sh` must start both binaries with a temporary database and assert:
 
@@ -590,7 +590,7 @@ metrics expose provider failures
 provider concurrency never exceeds limit
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 bash scripts/demo.sh
@@ -598,7 +598,7 @@ bash scripts/demo.sh
 
 Expected: failure because the mock provider and runnable binaries are incomplete.
 
-- [ ] **Step 3: Implement deterministic Mock Provider**
+- [x] **Step 3: Implement deterministic Mock Provider**
 
 Support:
 
@@ -613,7 +613,7 @@ PUT  /controlled/{key}?status=200
 GET  /records
 ```
 
-- [ ] **Step 4: Add crash-recovery acceptance**
+- [x] **Step 4: Add crash-recovery acceptance**
 
 `scripts/recovery-demo.sh` must:
 
@@ -625,7 +625,7 @@ GET  /records
 6. wait for lease expiry;
 7. assert eventual success, increased epoch and stable notification ID.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 ```bash
 make demo
@@ -647,7 +647,7 @@ git commit -m "test: add notifier acceptance demos"
 - Create: `README.md`
 - Create: `AI_USAGE.md`
 
-- [ ] **Step 1: Add failing packaging checks**
+- [x] **Step 1: Add failing packaging checks**
 
 ```bash
 test -f README.md
@@ -658,11 +658,11 @@ test -f docker-compose.yml
 
 Expected: failure until the files exist.
 
-- [ ] **Step 2: Add packaging**
+- [x] **Step 2: Add packaging**
 
 Use a multi-stage Dockerfile, non-root runtime user, persistent `/data` volume and Loopback-only host port bindings in Compose. Example credentials must be explicitly marked local-only.
 
-- [ ] **Step 3: Add README**
+- [x] **Step 3: Add README**
 
 Document:
 
@@ -674,7 +674,7 @@ Document:
 - normal demo, recovery demo and benchmark;
 - SQLite and MQ trade-offs.
 
-- [ ] **Step 4: Add AI usage record**
+- [x] **Step 4: Add AI usage record**
 
 Record:
 
@@ -684,7 +684,7 @@ Record:
 - human decision to make event priority P0;
 - test-first implementation and verification evidence.
 
-- [ ] **Step 5: Run complete quality gate**
+- [x] **Step 5: Run complete quality gate**
 
 ```bash
 gofmt -w .
@@ -699,7 +699,7 @@ make benchmark
 
 Expected: every command exits 0; benchmark meets `>= 50 req/s`, `P95 <= 200 ms`, and all requests return 202.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .gitignore .dockerignore Dockerfile docker-compose.yml .github README.md AI_USAGE.md
@@ -710,14 +710,14 @@ git commit -m "docs: add runbook and delivery assets"
 
 ## Final Verification
 
-- [ ] `git status --short` is empty.
-- [ ] `go test ./...` passes.
-- [ ] `go test -race ./...` passes.
-- [ ] `go vet ./...` passes.
-- [ ] `go build ./cmd/...` passes.
-- [ ] Normal delivery, retry, dead letter and Replay demos pass.
-- [ ] Crash recovery demo proves stable notification ID and increasing epoch.
-- [ ] Priority test proves HIGH precedence and LOW anti-starvation.
-- [ ] Metrics can derive API and Provider failure rates.
-- [ ] No secret appears in logs, API responses or persisted Attempt data.
-- [ ] Git history separates requirements, design, implementation, tests and delivery documentation.
+- [x] `git status --short` is empty.
+- [x] `go test ./...` passes.
+- [x] `go test -race ./...` passes.
+- [x] `go vet ./...` passes.
+- [x] `go build ./cmd/...` passes.
+- [x] Normal delivery, retry, dead letter and Replay demos pass.
+- [x] Crash recovery demo proves stable notification ID and increasing epoch.
+- [x] Priority test proves HIGH precedence and LOW anti-starvation.
+- [x] Metrics can derive API and Provider failure rates.
+- [x] No secret appears in logs, API responses or persisted Attempt data.
+- [x] Git history separates requirements, design, implementation, tests and delivery documentation.

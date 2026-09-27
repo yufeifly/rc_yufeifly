@@ -1,0 +1,67 @@
+environment: development
+
+server:
+  address: "0.0.0.0:8080"
+  max_body_bytes: 262144
+  shutdown_grace: 15s
+  read_header_timeout: 2s
+  read_timeout: 5s
+  write_timeout: 5s
+  idle_timeout: 60s
+
+database:
+  path: "/data/notifier.db"
+  busy_timeout: 5s
+
+scheduler:
+  poll_interval: 500ms
+  provider_scan_limit: 100
+  recovery_batch_size: 100
+  lease_duration: 30s
+  finalize_retry_budget: 5s
+
+workers:
+  concurrency: 10
+
+priority:
+  default: NORMAL
+  aging_interval: 30s
+  events:
+    payment.succeeded: HIGH
+    analytics.report: LOW
+
+retry:
+  initial_delay: 5s
+  max_delay: 6h
+  jitter_ratio: 0.2
+  default_max_attempts: 12
+
+# These credentials are local Compose examples only.
+auth:
+  mode: static_token
+  principals:
+    - caller_id: local-producer
+      role: producer
+      token_env: NOTIFIER_PRODUCER_TOKEN
+    - caller_id: local-admin
+      role: admin
+      token_env: NOTIFIER_ADMIN_TOKEN
+
+network_policy:
+  allow_insecure_http: true
+  allow_private_ip: true
+
+providers:
+  local:
+    version: local-v1
+    enabled: true
+    method: POST
+    url: "http://mock-provider:18080/fail-twice-then-200"
+    body_mode: envelope
+    success_status_codes: [200]
+    max_response_bytes: 16384
+    idempotency_header: "Idempotency-Key"
+    auth: {type: none}
+    timeout: {connect: 2s, request: 10s}
+    retry: {max_attempts: 12}
+    max_concurrency: 5
