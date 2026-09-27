@@ -54,6 +54,7 @@ var (
 	ErrIdempotencyConflict = errors.New("idempotency key is already used with different content")
 	ErrStaleLease          = errors.New("notification lease is stale")
 	ErrInvalidState        = errors.New("invalid notification state")
+	ErrUnsafeDestination   = errors.New("destination is blocked by network policy")
 )
 
 type Notification struct {
@@ -106,4 +107,18 @@ type CreateNotification struct {
 type CreateResult struct {
 	Notification Notification
 	Duplicate    bool
+}
+
+type ClaimedNotification struct {
+	Notification
+	AttemptID string
+}
+
+type DeliveryOutcome struct {
+	Success     bool
+	Category    ErrorCategory
+	HTTPStatus  *int
+	Retryable   bool
+	RetryAfter  *time.Duration
+	SafeMessage string
 }
