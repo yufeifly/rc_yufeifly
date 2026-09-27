@@ -125,6 +125,10 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 func (s *Store) CreateOrGet(ctx context.Context, in CreateNotification) (CreateResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

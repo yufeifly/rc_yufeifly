@@ -49,6 +49,8 @@ const (
 
 var (
 	ErrNotFound            = errors.New("notification not found")
+	ErrProviderNotFound    = errors.New("provider not found or disabled")
+	ErrInvalidRequest      = errors.New("invalid notification request")
 	ErrIdempotencyConflict = errors.New("idempotency key is already used with different content")
 	ErrStaleLease          = errors.New("notification lease is stale")
 	ErrInvalidState        = errors.New("invalid notification state")
