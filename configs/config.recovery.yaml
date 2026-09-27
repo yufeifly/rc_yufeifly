@@ -1,0 +1,57 @@
+environment: development
+
+server:
+  address: "127.0.0.1:18081"
+  max_body_bytes: 262144
+  shutdown_grace: 5s
+  read_header_timeout: 2s
+  read_timeout: 5s
+  write_timeout: 5s
+  idle_timeout: 30s
+
+database:
+  path: "./data/notifier-recovery.db"
+  busy_timeout: 5s
+
+scheduler:
+  poll_interval: 50ms
+  provider_scan_limit: 100
+  recovery_batch_size: 100
+  lease_duration: 1s
+  finalize_retry_budget: 500ms
+
+workers:
+  concurrency: 1
+
+priority:
+  default: NORMAL
+  aging_interval: 1s
+  events: {}
+
+retry:
+  initial_delay: 100ms
+  max_delay: 1s
+  jitter_ratio: 0
+  default_max_attempts: 3
+
+auth:
+  mode: disabled
+  principals: []
+
+network_policy:
+  allow_insecure_http: true
+  allow_private_ip: true
+
+providers:
+  delayed:
+    version: v1
+    enabled: true
+    method: POST
+    url: "http://127.0.0.1:18080/delayed"
+    body_mode: envelope
+    success_status_codes: [200]
+    max_response_bytes: 1024
+    auth: {type: none}
+    timeout: {connect: 1s, request: 5s}
+    retry: {max_attempts: 3}
+    max_concurrency: 1
