@@ -1,0 +1,90 @@
+environment: development
+
+server:
+  address: "127.0.0.1:8080"
+  max_body_bytes: 262144
+  shutdown_grace: 15s
+  read_header_timeout: 2s
+  read_timeout: 5s
+  write_timeout: 5s
+  idle_timeout: 60s
+
+database:
+  path: "./data/notifier.db"
+  busy_timeout: 5s
+
+scheduler:
+  poll_interval: 500ms
+  provider_scan_limit: 100
+  recovery_batch_size: 100
+  lease_duration: 30s
+  finalize_retry_budget: 5s
+
+workers:
+  concurrency: 10
+
+priority:
+  default: NORMAL
+  aging_interval: 30s
+  events:
+    payment.succeeded: HIGH
+    order.fulfilled: HIGH
+    crm.sync: NORMAL
+    analytics.report: LOW
+
+retry:
+  initial_delay: 5s
+  max_delay: 6h
+  jitter_ratio: 0.2
+  default_max_attempts: 12
+
+# Local development only. Production must use static_token.
+auth:
+  mode: disabled
+  principals: []
+
+network_policy:
+  allow_insecure_http: true
+  allow_private_ip: true
+
+providers:
+  crm:
+    version: "2026-09-27-v1"
+    enabled: true
+    method: POST
+    url: "http://127.0.0.1:18080/crm"
+    body_mode: envelope
+    headers:
+      X-Notifier-Source: reliable-http-notifier
+    success_status_codes: [200, 202]
+    max_response_bytes: 16384
+    idempotency_header: "Idempotency-Key"
+    auth:
+      type: bearer
+      token_env: CRM_BEARER_TOKEN
+    timeout:
+      connect: 3s
+      request: 10s
+    retry:
+      max_attempts: 12
+    max_concurrency: 5
+
+  inventory:
+    version: "2026-09-27-v1"
+    enabled: true
+    method: POST
+    url: "http://127.0.0.1:18080/inventory"
+    body_mode: passthrough
+    success_status_codes: [200]
+    max_response_bytes: 16384
+    idempotency_header: "Idempotency-Key"
+    auth:
+      type: api_key_header
+      header: "X-API-Key"
+      value_env: INVENTORY_API_KEY
+    timeout:
+      connect: 2s
+      request: 5s
+    retry:
+      max_attempts: 8
+    max_concurrency: 3
