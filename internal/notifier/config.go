@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -181,11 +182,44 @@ func (c Config) Validate() error {
 			return errors.New("production cannot allow private IP access")
 		}
 	}
-
-	if c.Priority.Default != "" {
-		if _, err := ResolvePriority(c.Priority, ""); err != nil {
-			return fmt.Errorf("default priority: %w", err)
+	if c.Auth.Mode == "disabled" {
+		host, _, err := net.SplitHostPort(c.Server.Address)
+		if err != nil {
+			return errors.New("disabled authentication requires a valid loopback listen address")
 		}
+		ip := net.ParseIP(host)
+		if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return errors.New("disabled authentication requires a loopback listen address")
+		}
+	}
+	if c.Server.Address == "" || c.Server.MaxBodyBytes <= 0 ||
+		c.Server.ReadHeaderTimeout <= 0 || c.Server.ReadTimeout <= 0 ||
+		c.Server.WriteTimeout <= 0 || c.Server.IdleTimeout <= 0 ||
+		c.Server.ShutdownGrace <= 0 {
+		return errors.New("server address, size limit, and timeouts must be positive")
+	}
+	if c.Database.Path == "" || c.Database.BusyTimeout <= 0 {
+		return errors.New("database path and busy timeout are required")
+	}
+	if c.Workers.Concurrency <= 0 {
+		return errors.New("worker concurrency must be positive")
+	}
+	if c.Scheduler.PollInterval <= 0 || c.Scheduler.ProviderScanLimit <= 0 ||
+		c.Scheduler.RecoveryBatchSize <= 0 || c.Scheduler.LeaseDuration <= 0 ||
+		c.Scheduler.FinalizeRetryBudget <= 0 {
+		return errors.New("scheduler intervals, limits, and lease durations must be positive")
+	}
+	if c.Priority.AgingInterval < time.Millisecond {
+		return errors.New("priority aging interval must be at least one millisecond")
+	}
+	if c.Retry.InitialDelay <= 0 || c.Retry.MaxDelay < c.Retry.InitialDelay ||
+		c.Retry.JitterRatio < 0 || c.Retry.JitterRatio > 1 ||
+		c.Retry.DefaultMaxAttempts <= 0 {
+		return errors.New("retry policy is invalid")
+	}
+
+	if _, err := ResolvePriority(c.Priority, ""); err != nil {
+		return fmt.Errorf("default priority: %w", err)
 	}
 	for eventType, priority := range c.Priority.Events {
 		if strings.TrimSpace(eventType) == "" {

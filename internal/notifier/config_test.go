@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolvePriorityUsesServerMapping(t *testing.T) {
@@ -142,5 +143,46 @@ func TestResolveSecretsRejectsMissingEnvironmentVariable(t *testing.T) {
 
 	if err := cfg.ResolveSecrets(); err == nil {
 		t.Fatal("ResolveSecrets() error = nil, want missing environment variable error")
+	}
+}
+
+func TestDisabledAuthenticationRequiresLoopbackListener(t *testing.T) {
+	cfg := validConfigFixture()
+	cfg.Auth.Mode = "disabled"
+	cfg.Server.Address = "0.0.0.0:8080"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("Validate() error = %v, want loopback restriction", err)
+	}
+}
+
+func validConfigFixture() Config {
+	return Config{
+		Environment: "development",
+		Server: ServerConfig{
+			Address:           "127.0.0.1:8080",
+			MaxBodyBytes:      1024,
+			ShutdownGrace:     time.Second,
+			ReadHeaderTimeout: time.Second,
+			ReadTimeout:       time.Second,
+			WriteTimeout:      time.Second,
+			IdleTimeout:       time.Second,
+		},
+		Database: DatabaseConfig{Path: "test.db", BusyTimeout: time.Second},
+		Scheduler: SchedulerConfig{
+			PollInterval:        time.Millisecond,
+			ProviderScanLimit:   1,
+			RecoveryBatchSize:   1,
+			LeaseDuration:       time.Second,
+			FinalizeRetryBudget: time.Millisecond,
+		},
+		Workers:  WorkersConfig{Concurrency: 1},
+		Priority: PriorityConfig{Default: "NORMAL", AgingInterval: time.Second},
+		Retry: RetryConfig{
+			InitialDelay:       time.Second,
+			MaxDelay:           time.Minute,
+			JitterRatio:        0.2,
+			DefaultMaxAttempts: 3,
+		},
+		Auth: AuthConfig{Mode: "static_token"},
 	}
 }
